@@ -43,7 +43,7 @@
 #' \dontrun{
 #' data(wiki)
 #' coords <- projectKNNs(wiki)
-#' coords <- scale(coords)
+#' coords <- t(coords)
 #' plot(coords, xlim = c(-1.5,1.5), ylim = c(-1.5,1.5))
 #' }
 #' @importFrom stats rnorm

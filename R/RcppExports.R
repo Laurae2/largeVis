@@ -13,6 +13,14 @@ fastSDistance <- function(is, js, i_locations, j_locations, x, distMethod, verbo
     .Call('largeVis_fastSDistance', PACKAGE = 'largeVis', is, js, i_locations, j_locations, x, distMethod, verbose)
 }
 
+distMatrixTowij <- function(is, js, xs, sigmas, N, verbose) {
+    .Call('largeVis_distMatrixTowij', PACKAGE = 'largeVis', is, js, xs, sigmas, N, verbose)
+}
+
+sigFunc <- function(sigma, x_i, perplexity) {
+    .Call('largeVis_sigFunc', PACKAGE = 'largeVis', sigma, x_i, perplexity)
+}
+
 testPositiveGradient <- function(i, j, alpha, f) {
     .Call('largeVis_testPositiveGradient', PACKAGE = 'largeVis', i, j, alpha, f)
 }
@@ -33,15 +41,11 @@ searchTreesTSparse <- function(threshold, n_trees, K, max_recursion_degree, maxI
     .Call('largeVis_searchTreesTSparse', PACKAGE = 'largeVis', threshold, n_trees, K, max_recursion_degree, maxIter, i, j, x, distMethod, verbose)
 }
 
-distMatrixTowij <- function(is, js, xs, sigmas, N, verbose) {
-    .Call('largeVis_distMatrixTowij', PACKAGE = 'largeVis', is, js, xs, sigmas, N, verbose)
-}
-
-sigFunc <- function(sigma, x_i, perplexity) {
-    .Call('largeVis_sigFunc', PACKAGE = 'largeVis', sigma, x_i, perplexity)
-}
-
 sgd <- function(coords, is, js, ps, ws, gamma, rho, minRho, useWeights, nBatches, M, alpha, verbose) {
     .Call('largeVis_sgd', PACKAGE = 'largeVis', coords, is, js, ps, ws, gamma, rho, minRho, useWeights, nBatches, M, alpha, verbose)
+}
+
+LINE <- function(coords, targets, sources, ps, ws, rho, nBatches, M, verbose) {
+    .Call('largeVis_LINE', PACKAGE = 'largeVis', coords, targets, sources, ps, ws, rho, nBatches, M, verbose)
 }
 

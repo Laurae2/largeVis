@@ -76,7 +76,8 @@ randomProjectionTreeSearch.CsparseMatrix <- function(x,
 
   knns <- searchTreesCSparse(threshold = tree_threshold,
                       n_trees = n_trees,
-                      K = K, max_recursion_degree = max_depth,
+                      K = K,
+                      max_recursion_degree = max_depth,
                       maxIter = max_iter,
                       i = x@i,
                       p = x@p,
@@ -107,7 +108,7 @@ randomProjectionTreeSearch.TsparseMatrix <- function(x,
                                                      max_depth = 32,
                                                      distance_method =
                                                        "Euclidean",
-                                                     verbose= TRUE) {
+                                                     verbose = TRUE) {
   if (verbose) cat("Searching for neighbors.\n")
 
   knns <- searchTreesTSparse(threshold = tree_threshold,

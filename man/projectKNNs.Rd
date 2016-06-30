@@ -63,7 +63,7 @@ Note that the input matrix should be symmetric.  If any columns in the matrix ar
 \dontrun{
 data(wiki)
 coords <- projectKNNs(wiki)
-coords <- scale(coords)
+coords <- t(coords)
 plot(coords, xlim = c(-1.5,1.5), ylim = c(-1.5,1.5))
 }
 }

@@ -8,6 +8,66 @@ using namespace Rcpp;
 using namespace std;
 using namespace arma;
 
+
+void addNeighbors(const arma::ivec& indices,
+                  neighborhood* heap[],
+                  const int I) {
+  ivec neighbors = ivec(indices);
+  neighborhood tmpStorage = neighborhood();
+  ivec::iterator newEnd = neighbors.end();
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+  {
+    for (ivec::iterator it = neighbors.begin();
+         it != newEnd;
+         it++) {
+      tmpStorage.clear();
+      tmpStorage.swap(*heap[*it]);
+      heap[*it] -> reserve(tmpStorage.size() + I);
+      ivec::iterator newIt = neighbors.begin();
+      vector<int>::iterator oldIt = tmpStorage.begin();
+      vector<int>::iterator oldEnd = tmpStorage.end();
+      int last;
+      int best = -1;
+      while (oldIt != oldEnd || newIt != newEnd) {
+        if (oldIt == oldEnd) best = *newIt++;
+        else if (newIt == newEnd) best = *oldIt++;
+        else best = (*newIt < *oldIt) ? *newIt++ : *oldIt++;
+        if (best == last || best == *it) continue;
+        heap[*it] -> push_back(best);
+        last = best;
+      }
+    }
+  }
+}
+
+arma::vec hyperplane(const arma::ivec& indices,
+                     const arma::mat& data,
+                     const int I) {
+  vec direction = vec(indices.size());
+  int x1idx, x2idx;
+  vec v;
+  vec m;
+  do {
+    const vec selections = randu(2) * (I - 1);
+    x1idx = indices[selections[0]];
+    x2idx = indices[selections[1]];
+    if (x1idx == x2idx) x2idx = indices[((int)selections[1] + 1) % indices.size()];
+    const vec x2 = data.col(x2idx);
+    const vec x1 = data.col(x1idx);
+    // Get hyperplane
+    m =  (x1 + x2) / 2; // Base point of hyperplane
+    const vec d = x1 - x2;
+    v =  d / as_scalar(norm(d, 2)); // unit vector
+  } while (x1idx == x2idx);
+
+  for (int i = 0; i < indices.size(); i++) {
+    const vec X = data.col(indices[i]);
+    direction[i] = dot((X - m), v);
+  }
+  return direction;
+}
 /*
  * The recursive function for the annoy neighbor search
  * algorithm. Partitions space by a random hyperplane,
@@ -20,72 +80,22 @@ void searchTree(const int& threshold,
                 const arma::ivec& indices,
                 const arma::mat& data,
                 neighborhood* heap[],
-                                  const int& iterations,
-                                  Progress& progress) {
+                const int& iterations,
+                Progress& progress) {
   const int I = indices.size();
   // const int D = data.n_rows;
   if (progress.check_abort()) return;
   if (I < 2) stop("Tree split failure.");
   if (I <= threshold || iterations == 0) {
-    ivec neighbors = ivec(indices);
-    neighborhood tmpStorage = neighborhood();
-    ivec::iterator newEnd = neighbors.end();
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      for (ivec::iterator it = neighbors.begin();
-           it != newEnd;
-           it++) {
-        tmpStorage.clear();
-        tmpStorage.swap(*heap[*it]);
-        heap[*it] -> reserve(tmpStorage.size() + I);
-        ivec::iterator newIt = neighbors.begin();
-        vector<int>::iterator oldIt = tmpStorage.begin();
-        vector<int>::iterator oldEnd = tmpStorage.end();
-        int last;
-        int best = -1;
-        while (oldIt != oldEnd || newIt != newEnd) {
-          if (oldIt == oldEnd) best = *newIt++;
-          else if (newIt == newEnd) best = *oldIt++;
-          else best = (*newIt < *oldIt) ? *newIt++ : *oldIt++;
-          if (best == last || best == *it) continue;
-          heap[*it] -> push_back(best);
-          last = best;
-        }
-      }
-    }
+    addNeighbors(indices, heap, I);
     progress.increment(I);
     return;
   }
-  vec direction = vec(indices.size());
-  {
-    int x1idx, x2idx;
-    vec v;
-    vec m;
-    do {
-      const vec selections = randu(2) * (I - 1);
-      x1idx = indices[selections[0]];
-      x2idx = indices[selections[1]];
-      if (x1idx == x2idx) x2idx = indices[((int)selections[1] + 1) % indices.size()];
-      const vec x2 = data.col(x2idx);
-      const vec x1 = data.col(x1idx);
-      // Get hyperplane
-      m =  (x1 + x2) / 2; // Base point of hyperplane
-      const vec d = x1 - x2;
-      v =  d / as_scalar(norm(d, 2)); // unit vector
-    } while (x1idx == x2idx);
-
-    for (int i = 0; i < indices.size(); i++) {
-      const vec X = data.col(indices[i]);
-      direction[i] = dot((X - m), v);
-    }
-  }
-  // Normalize direction
+  vec direction = hyperplane(indices, data, I);
   const double middle = median(direction);
-
   const uvec left = find(direction > middle);
   const uvec right = find(direction <= middle);
+
   if (left.size() >= 2 && right.size() >= 2) {
     searchTree(threshold, indices(left), data, heap, iterations - 1, progress);
     searchTree(threshold, indices(right), data, heap, iterations - 1, progress);
@@ -94,6 +104,97 @@ void searchTree(const int& threshold,
     searchTree(threshold, indices.subvec(indices.size() / 2, indices.size() - 1), data, heap, iterations - 1, progress);
   }
 };
+
+neighborhood** createNeighborhood(int N) {
+  neighborhood** treeNeighborhoods = new neighborhood*[N];
+  for (int i = 0; i < N; i++) {
+    int seed[] = {i};
+    treeNeighborhoods[i] = new vector<int>(seed, seed + sizeof(seed) / sizeof(int));
+  }
+  return treeNeighborhoods;
+}
+
+void copyHeapToMatrix(set<int>* tree,
+                      const int K,
+                      const int i,
+                      arma::imat& knns) {
+  set<int>::iterator sortIterator = tree -> begin();
+  set<int>::iterator end = tree -> end();
+  int j = 0;
+  while (sortIterator != end) knns(j++, i) = *sortIterator++;
+  if (j == 0) stop("Tree failure.");
+  while (j < K) knns(j++, i) = -1;
+}
+
+void addDistance(const arma::vec& x_i,
+                 const arma::mat& data,
+                 const int j,
+                 maxHeap& heap,
+                 const int K,
+                 double (*distanceFunction)(const arma::vec& x_i, const arma::vec& x_j)) {
+  const double d = distanceFunction(x_i, data.col(j));
+  if (d != 0) {
+    heap.emplace(d, j);
+    if (heap.size() > K) heap.pop();
+  }
+}
+
+arma::imat annoy(const int n_trees,
+                 const int threshold,
+                 const arma::mat& data,
+                 const int max_recursion_degree,
+                 const int N,
+                 const int K,
+                 double (*distanceFunction)(const arma::vec& x_i, const arma::vec& x_j),
+                 Progress& p) {
+  set<int>** treeHolder = new set<int>*[N];
+  neighborhood** treeNeighborhoods = createNeighborhood(N);
+  const ivec indices = regspace<ivec>(0, N - 1);
+
+#ifdef _OPENMP
+#pragma omp parallel for shared(treeNeighborhoods)
+#endif
+  for (int t = 0; t < n_trees; t++) if (! p.check_abort())
+    searchTree(threshold,
+               indices,
+               data,
+               treeNeighborhoods,
+               max_recursion_degree, // maximum permitted level of recursion
+               p
+    );
+  if (p.check_abort()) return imat(K, N);
+  // Reduce size from threshold * n_trees to top K, and sort
+  maxHeap thisHeap = maxHeap();
+#ifdef _OPENMP
+#pragma omp parallel for shared(treeHolder, treeNeighborhoods) private(thisHeap)
+#endif
+  for (int i = 0; i < N; i++) if (p.increment()) {
+    const vec x_i = data.col(i);
+    vector<int> *neighborhood = treeNeighborhoods[i];
+    for (vector<int>::iterator j = neighborhood -> begin();
+         j != neighborhood -> end();
+         j++)
+      addDistance(x_i, data, *j, thisHeap, K, distanceFunction);
+    delete treeNeighborhoods[i];
+    treeHolder[i] = new set<int>();
+    while (! thisHeap.empty()) {
+      treeHolder[i] -> emplace(thisHeap.top().n);
+      thisHeap.pop();
+    }
+  }
+  // Copy sorted neighborhoods into matrix. This is faster than
+  // sorting in-place.
+  imat knns = imat(K,N);
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+  for (int i = 0; i < N; i++) if (p.increment()) {
+    set<int>* tree = treeHolder[i];
+    copyHeapToMatrix(tree, K, i, knns);
+    delete treeHolder[i];
+  }
+  return knns;
+}
 
 // [[Rcpp::export]]
 arma::imat searchTrees(const int& threshold,
@@ -114,74 +215,14 @@ arma::imat searchTrees(const int& threshold,
 
   Progress p((N * n_trees) + (2 * N) + (N * maxIter), verbose);
 
-  imat knns;
-  {
-    set<int>** treeHolder = new set<int>*[N];
-    double (*distanceFunction)(const arma::vec& x_i, const arma::vec& x_j);
-    if (distMethod.compare(std::string("Euclidean")) == 0) distanceFunction = relDist;
-    else if (distMethod.compare(std::string("Cosine")) == 0) distanceFunction = cosDist;
-    else distanceFunction = relDist;
-
-    neighborhood** treeNeighborhoods = new neighborhood*[N];
-    for (int i = 0; i < N; i++) {
-      int seed[] = {i};
-      treeNeighborhoods[i] = new vector<int>(seed, seed + sizeof(seed) / sizeof(int));
-    }
-    const ivec indices = regspace<ivec>(0, N - 1);
-#ifdef _OPENMP
-#pragma omp parallel for shared(treeNeighborhoods)
-#endif
-    for (int t = 0; t < n_trees; t++) if (! p.check_abort()) {
-      searchTree(threshold,
-                 indices,
-                 data,
-                 treeNeighborhoods,
-                 max_recursion_degree, // maximum permitted level of recursion
-                 p
-      );
-    }
-    if (p.check_abort()) return knns;
-    // Reduce size from threshold * n_trees to top K, and sort
-    maxHeap thisHeap = maxHeap();
-#ifdef _OPENMP
-#pragma omp parallel for shared(treeHolder, treeNeighborhoods) private(thisHeap)
-#endif
-    for (int i = 0; i < N; i++) if (p.increment()) {
-      const vec x_i = data.col(i);
-      vector<int> *neighborhood = treeNeighborhoods[i];
-      for (vector<int>::iterator j = neighborhood -> begin();
-           j != neighborhood -> end();
-           j++) {
-
-        const double d = distanceFunction(x_i, data.col(*j));
-        if (d != 0) {
-          thisHeap.emplace(d, *j);
-          if (thisHeap.size() > K) thisHeap.pop();
-        }
-      }
-      delete treeNeighborhoods[i];
-      treeHolder[i] = new set<int>();
-      while (! thisHeap.empty()) {
-        treeHolder[i] -> emplace(thisHeap.top().n);
-        thisHeap.pop();
-      }
-    }
-    // Copy sorted neighborhoods into matrix. This is faster than
-    // sorting in-place.
-    knns = imat(K,N);
-#ifdef _OPENMP
-#pragma omp parallel for
-#endif
-    for (int i = 0; i < N; i++) if (p.increment()) {
-      set<int>::iterator sortIterator = treeHolder[i] -> begin();
-      set<int>::iterator end = treeHolder[i] -> end();
-      int j = 0;
-      while (sortIterator != end) knns(j++, i) = *sortIterator++;
-      if (j == 0) stop("Tree failure.");
-      while (j < K) knns(j++,i) = -1;
-      delete treeHolder[i];
-    }
-  }
+  imat knns = annoy(n_trees,
+                    threshold,
+                    data,
+                    max_recursion_degree,
+                    N,
+                    K,
+                    distanceFunction,
+                    p);
 
   if (p.check_abort()) return imat(0);
   imat old_knns  = imat(K,N);
@@ -226,25 +267,20 @@ arma::imat searchTrees(const int& threshold,
                                            ends.begin());
              it.first != theEnd;
              it.first++, it.second++) while (*it.first != *it.second) { // For each neighborhood, keep going until
-               // we find a non-dupe or get to the end
+           // we find a non-dupe or get to the end
 
-               if (**it.first == -1) advance(*it.first, distance(*it.first, *it.second));
-               else if (**it.first == i || **it.first == lastOne) advance(*it.first, 1);
-               else if (whch == 0 || **it.first < *whch) {
-                 whch = *it.first;
-                 break;
-               } else break;
-             }
+           if (**it.first == -1) advance(*it.first, distance(*it.first, *it.second));
+           else if (**it.first == i || **it.first == lastOne) advance(*it.first, 1);
+           else if (whch == 0 || **it.first < *whch) {
+             whch = *it.first;
+             break;
+           } else break;
+         }
+         if (whch == 0) break;
+         lastOne = *whch;
+         advance(whch, 1);
 
-             if (whch == 0) break;
-             lastOne = *whch;
-             advance(whch, 1);
-
-             d = distanceFunction(x_i, data.col(lastOne));
-             if (d > 0) {
-               thisHeap.emplace(d, lastOne);
-               if (thisHeap.size() > K) thisHeap.pop();
-             }
+         addDistance(x_i, data, lastOne, thisHeap, K, distanceFunction);
       }
 
       sorter.clear();
@@ -514,75 +550,6 @@ arma::mat searchTreesTSparse(const int& threshold,
   return searchTreesSparse(threshold,n_trees,K,max_recursion_degree,maxIter,data,distMethod,verbose);
 }
 
-
-// Take four vectors (i indices, j indices, edge distances, and sigmas), and calculate
-// p(j|i) and then w_{ij}.
-// [[Rcpp::export]]
-arma::sp_mat distMatrixTowij(
-    const NumericVector is,
-    const NumericVector js,
-    const NumericVector xs,
-    const NumericVector sigmas,
-    const int N,
-    bool verbose
-) {
-
-  Progress p(xs.size() * 2, verbose);
-  vec rowSums = vec(N);
-  vec pjis = vec(is.length());
-  for (int idx=0; idx < N; idx++) rowSums[idx] = 0;
-  // Compute pji, accumulate rowSums at the same time
-#ifdef _OPENMP
-#pragma omp parallel for shared(pjis, rowSums)
-#endif
-  for (int e=0; e < pjis.size(); e++) if (p.increment()){
-    const int i = is[e];
-    const double pji = exp(- pow(xs[e], 2)) / sigmas[i];
-    pjis[e] = pji;
-#ifdef _OPENMP
-#pragma omp atomic
-#endif
-    rowSums[i] += pji;
-  }
-  if (p.check_abort()) return sp_mat(0);
-  // Now convert p(j|i) to w_{ij} by symmetrizing.
-  // Loop through the edges, and populate a location matrix and value vector for
-  // the sp_mat batch insertion constructor.  Put all coordinates in the
-  // lower triangle.  The constructor will automatically add duplicates.
-  vec values = vec(pjis.size());
-  umat locations = umat(2, pjis.size());
-#ifdef _OPENMP
-#pragma omp parallel for shared(locations, values)
-#endif
-  for (int e = 0; e < pjis.size(); e++) if (p.increment()) {
-    int newi = is[e], newj = js[e];
-    if (newi < newj) swap(newi, newj);
-    values[e] =  ((pjis[e] / rowSums[is[e]]) / (2 * N));
-    locations(1,e) = newi;
-    locations(0,e) = newj;
-  }
-  sp_mat wij = sp_mat(
-    true, // add_values
-    locations,
-    values,
-    N, N // n_col and n_row
-  );
-  wij = wij + wij.t();
-  return wij;
-};
-
-
-// [[Rcpp::export]]
-double sigFunc(const double& sigma,
-               const NumericVector& x_i,
-               const double& perplexity) {
-  const NumericVector xs = exp(- pow(x_i,2) / sigma);
-  // dxs_ds = xs * pow(x_i, 2)
-  const NumericVector softxs = xs / sum(xs);
-  // dsoftxs_ds =
-  const double p2 = - sum(log(softxs) / log(2)) / xs.length();
-  return pow(perplexity - p2, 2);
-};
 
 /*
  * The stochastic gradient descent function.
